@@ -111,18 +111,46 @@ pub fn id_map_range(root: &mut page::Table, start: usize, end: usize, bits: i64)
 	}
 }
 
-/*
-SV39 MMU 分页系统
-
-*/
+extern "C" {
+	fn switch_to_user(frame: usize, mepc: usize, satp: usize) -> !;
+}
 
 //Entry Point
 #[no_mangle]
 //extern "C" fn kinit() -> usize {
 extern "C" fn kinit() {
 	uart::Uart::new(0x1000_0000).init();
+        //SV39 MMU 分页系统
 	page::init();
 	kmem::init();
+
+	// VIRTIO = [1..8]
+	// UART0 = 10
+	// PCIE = [32..35]
+	println!("Setting up UART interrupts and PLIC...");
+	plic::set_threshold(0);
+	plic::enable(10);
+	plic::set_priority(10, 1);
+
+	let ret = process::init();
+	println!("Init process created at address 0x{:08x}", ret);
+
+	unsafe {
+		//初始化CLINT timer, 设置下一次时钟中断的触发
+		let mtimecmp = 0x0200_4000 as *mut u64;
+		let mtime = 0x0200_bff8 as *const u64;
+		//QEMU的频率是10_000_000 Hz, 触发在一秒后
+		mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
+	}
+	let (frame, mepc, satp) = sched::schedule();
+	unsafe {
+		switch_to_user(frame, mepc, satp);
+	}
+
+	// switch_to_user will not return, so we should never get here
+	println!("WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
+
+/////////////////////////////////////////
 
 	let root_ptr = kmem::get_page_table();
 	let root_u = root_ptr as usize;
@@ -232,16 +260,9 @@ extern "C" fn kinit() {
 			0x0c20_8001,
 			page::EntryBits::ReadWrite.val(),
 		    );
+	//page::print_page_allocations();
+
 	/*
-	page::print_page_allocations();
-
-	//地址翻译，通过虚拟地址获取物理地址, 用户进程会用到
-	let p = 0x8005_7000 as usize;
-	let m = page::virt_to_phys(&root, p).unwrap_or(0);
-	println!("Walk 0x{:x} = 0x{:x}", p, m);
-	*/
-
-	/////
 	let satp_value = cpu::build_satp(cpu::SatpMode::Sv39, 0, root_u);
 	unsafe {
 		//切换上下文时保存寄存器等的TrapFrame, 其物理地址写入mscratch寄存器
@@ -255,11 +276,15 @@ extern "C" fn kinit() {
 		id_map_range(&mut root, cpu::KERNEL_TRAP_FRAME[0].trap_stack.sub(page::PAGE_SIZE) as usize, cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize, page::EntryBits::ReadWrite.val());
 		id_map_range(&mut root, cpu::mscratch_read(), cpu::mscratch_read() + core::mem::size_of::<cpu::TrapFrame,>(), page::EntryBits::ReadWrite.val());
 
-		//演示地址翻译
+	        //演示地址翻译，通过虚拟地址获取物理地址, 用户进程会用到
 		page::print_page_allocations();
 		let p = cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize -1;
 		let m = page::virt_to_phys(&root, p).unwrap_or(0);
 		println!("Walk Trap Stack 0x{:x} = 0x{:x}", p, m);
+
+		//试验触发一个page fault
+		let v = 0x0 as *mut u64;
+		v.write_volatile(0);
 	}
 
 	println!("Setting 0x{:x}", satp_value);
@@ -267,8 +292,7 @@ extern "C" fn kinit() {
 	cpu::satp_write(satp_value);
 	cpu::satp_fence_asid(0);
 	// sfence.vma 刷新TLB缓存
-
-
+	*/
 
 // SATP寄存器
 //  63      60 59          44 43                0
@@ -346,26 +370,6 @@ fn kmain() {
 	//到这后，Box, vec和String的内存应该被释放了，因为出了括号的范围
 	kmem::print_table();
 
-	unsafe {
-		//初始化CLINT timer, 设置下一次时钟中断的触发
-		let mtimecmp = 0x0200_4000 as *mut u64;
-		let mtime = 0x0200_bff8 as *const u64;
-		//QEMU的频率是10_000_000 Hz, 触发在一秒后
-		mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
-
-		//试验触发一个page fault
-		let v = 0x0 as *mut u64;
-		v.write_volatile(0);
-	}
-
-	// VIRTIO = [1..8]
-	// UART0 = 10
-	// PCIE = [32..35]
-	println!("Setting up interrupts and PLIC...");
-	plic::set_threshold(0);
-	plic::enable(10);
-	plic::set_priority(10, 1);
-
 	/*
 	println!("I'm so awesome. If you start typing something, I'll show you what you typed!");
 	loop {
@@ -424,4 +428,7 @@ pub mod kmem;
 pub mod cpu;
 pub mod trap;
 pub mod plic;
+pub mod process;
+pub mod syscall;
+pub mod sched;
 

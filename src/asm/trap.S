@@ -14,7 +14,7 @@
 
 .option norvc
 
-#启用备用宏模式
+#启用备用宏模式, 可以用循环了
 .altmacro
 .set NUM_GP_REGS, 32 #每种上下文的寄存器数
 .set NUM_FP_REGS, 32
@@ -61,12 +61,13 @@ m_trap_vector:
     #U态的中断: sscratch = kernel_addr;
     #S态的中断: sscratch = 0;
     #
+    #mscratch存放TrapFrame的地址 
     #交换了t6和mscratch的值
     csrrw t6, mscratch, t6
 
     #循环, 默认用了t6, 最底下的x31寄存器
-    .set i, 1
-    .rept 30
+    .set i, 0
+    .rept 31
     	save_gp %i
 	.set i, i+1
     .endr
@@ -85,8 +86,11 @@ m_trap_vector:
     csrr a2, mcause
     csrr a3, mhartid
     csrr a4, mstatus
-    mv   a5, t5
-    ld   sp, 520(a5) //trap stack
+    csrr a5, mscratch
+
+    la t0, KERNEL_STACK_END
+    ld sp, 0(t0)
+    #ld   sp, 520(a5) //trap stack
     call m_trap
 
     #函数返回值到a0
@@ -105,19 +109,26 @@ m_trap_vector:
 
 .global switch_to_user
 switch_to_user:
+    # a0 = FrameTrap, a1 = MEPC, a2 = SATP
     csrw mscratch, a0
 
+    # U态MPP(12:11)=00, MPIE = 1 << 7
     li t0, 1 << 7 | 1 << 5
     csrw mstatus, t0
+
     csrw mepc, a1
     csrw satp, a2
+
     li t1, 0xaaa
     csrw mie, t1
+
     la t2, m_trap_vector
     csrw mtvec, t2
 
+    #使MMU刷新TLB, 因为多进程时，可以指定PID作为地址空间标识符ASID; 目前不是最高效的方式
     sfence.vma
 
+    #把所有寄存器等载入到当前CPU
     mv t6, a0
     .set i, 1
     .rept 31
@@ -125,6 +136,7 @@ switch_to_user:
 	.set i, i+1
     .endr
 
+    #后执行MEPC处的指令
     mret
 
 .global make_syscall

@@ -13,11 +13,12 @@ pub enum SatpMode {
 #[derive(Clone, Copy)]
 // 会使用mscratch寄存器来保存结构体的信息
 pub struct TrapFrame {
-	pub regs:  [usize; 32], // 0 - 255
-	pub fregs: [usize; 32], // 256 - 511
-	pub satp: usize, // 512 - 519
-	pub trap_stack: *mut u8, // 520
+	pub regs:   [usize; 32], // 0 - 255
+	pub fregs:  [usize; 32], // 256 - 511
+	pub satp:   usize, // 512 - 519
+	pub pc:     usize, // 520
 	pub hartid: usize, // 528
+	pub qm:     usize, // 536
 }
 
 impl TrapFrame {
@@ -26,8 +27,9 @@ impl TrapFrame {
 			regs: [0; 32],
 			fregs:[0; 32],
 			satp: 0,
-			trap_stack: null_mut(),
+			pc: 0,
 			hartid: 0,
+			qm: 1,
 		}
 	}
 }
@@ -148,12 +150,14 @@ pub fn satp_read() -> usize {
 	}
 }
 
+//本质会刷新整个TLB
 pub fn satp_fence(vaddr: usize, asid: usize) {
 	unsafe {
 		llvm_asm!("sfence.vma $0, $1" :: "r"(vaddr), "r"(asid));
 	}
 }
 
+//这允许我们围住一个特定的进程，而不是整个TLB
 pub fn satp_fence_asid(asid: usize) {
 	unsafe {
 		llvm_asm!("sfence.vma zero, $0" :: "r"(asid));

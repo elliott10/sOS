@@ -16,19 +16,19 @@
 .global _start
 _start:
 
-### HART(hardware thread)硬件线程
-#也有些板子会把mhartid存在hart的a0寄存器；
-#这时hart需要等待一个处理器间中断IPI
-    csrr t0, mhartid
-    bnez t0, 4f
-
-#关闭MMU
-    csrw satp, zero
-
 .option push
 .option norelax
     la gp, _global_pointer
 .option pop
+
+#关闭MMU
+    csrw satp, zero
+
+### HART(hardware thread)硬件线程
+#也有些板子会把mhartid存在hart的a0寄存器；
+#这时hart需要等待一个处理器间中断IPI
+    csrr t0, mhartid
+    bnez t0, 3f #非0核，跳转到3位置执行
 
 #BSS节清零
     la a0, _bss_start
@@ -42,7 +42,6 @@ _start:
     bltu a0, a1, 1b
 
 2:
-
 # 进入Rust
     #li t5, 0xffff
     #csrw medeleg, t5
@@ -64,9 +63,10 @@ _start:
     //la t2, asm_trap_vector
     //csrw mtvec, t2
 
-    #中断
     #li t3, (1<<3)|(1<<7)|(1<<11)
     #csrw mie, t3
+
+    #关中断，kinit()初始化
     csrw mie, zero
     
     #设置返回地址，到时候进入supervisor mode
@@ -121,10 +121,6 @@ _start:
 //    la t3, asm_trap_vector
 //    csrw stvec, t3
 
-    la t1, kmain
-    csrw mepc, t1
-    #csrw sepc, t1
-
 /*
     #由kinit()返回值到a0, 使能MMU
     csrw satp, a0
@@ -133,46 +129,55 @@ _start:
 
     #进入S态，并使能中断
     sret
-*/
-    la ra, 4f
-    mret
 
-/*
 另：
 置位MMP=01,使能中断，mret后进入rust函数，处于S态
 li t0, (1<<11)|(1<<5)
 csrw mstatus, t0
 
+*/
 la t1, kmain
 csrw mepc, t1
 
+la ra, 4f
 mret
-*/
 
 3:
-//停泊的核心都会运行在这
+//停泊的核心都会运行在这; 一般来说，每个核有自己单独的寄存器和L1 Cache；
+//设置好只在收到软件中断(SIPI)时唤醒;
+//SIPI (Software Intra-Processor Interrupt)是通过写CLINT地址: base_address + hart * 4 ;
+//CLINT的MMIO基址0x0200_0000
+//对额外的核我们只用来跑用户程序
+
     la sp, _stack_end
     li t0, 0x10000
     csrr a0, mhartid
     mul t0, t0, a0
     sub sp, sp, t0
+    // sp = _stack_end - 0x10000 * mhartid, 每个核hart分成单独的栈
 
+    //在M态，开启中断
     li t0, 0b11 << 11 | (1 << 7)
     csrw mstatus, t0
 
+    //允许MSIP软中断。
+    //这样就可以通过hart #0核来唤醒其他核
     li t3, (1 << 3)
     csrw mie, t3
 
+    #准备进入Rust初始化,初始化会给每个核单独的TrapFrame
     la t1, kinit_hart
     csrw mepc, t1
 
     la t2, m_trap_vector
     csrw mtvec, t2
 
+    //return to 忙等循环
     la ra, 4f
     mret
 
 #忙等循环
 4:
+#wfi = wait for interrupt, 关闭所有东西 
     wfi
     j 4b
