@@ -1,6 +1,8 @@
 use core::convert::TryInto;
 use core::fmt::{Error, Write};
 
+use crate::console::push_stdin;
+
 pub struct Uart {
 	base_address: usize,
 }
@@ -112,4 +114,24 @@ fn unsafe mmio_read(address: usize, offset: usize, value: u8) -> u8 {
 	reg.add(offset).read_volatile(value) //无分号可直接返回值
 }
 */
+
+pub fn handle_interrupt() {
+	let mut my_uart = Uart::new(0x1000_0000);
+	if let Some(c) = my_uart.get() {
+		//CONSOLE
+		push_stdin(c);
+
+		match c {
+			0x7f => { //0x8 [backspace] ; 而实际qemu运行，[backspace]键输出0x7f, 表示del
+				print!("{} {}", 8 as char, 8 as char);
+			},
+			10 | 13 => { // 新行或回车
+				println!();
+			},
+			_ => {
+				print!("{}", c as char);
+			},
+		}
+	}
+}
 

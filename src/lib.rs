@@ -112,7 +112,13 @@ pub fn id_map_range(root: &mut page::Table, start: usize, end: usize, bits: i64)
 }
 
 extern "C" {
-	fn switch_to_user(frame: usize, mepc: usize, satp: usize) -> !;
+	fn switch_to_user(frame: usize) -> !;
+}
+
+fn rust_switch_to_user(frame: usize) -> ! {
+	unsafe {
+		switch_to_user(frame);
+	}
 }
 
 //Entry Point
@@ -132,9 +138,12 @@ extern "C" fn kinit() {
 	plic::enable(10);
 	plic::set_priority(10, 1);
 
+	console::init();
+
 	let ret = process::init();
 	println!("Init process created at address 0x{:08x}", ret);
 
+	/*
 	unsafe {
 		//初始化CLINT timer, 设置下一次时钟中断的触发
 		let mtimecmp = 0x0200_4000 as *mut u64;
@@ -142,13 +151,30 @@ extern "C" fn kinit() {
 		//QEMU的频率是10_000_000 Hz, 触发在一秒后
 		mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
 	}
-	let (frame, mepc, satp) = sched::schedule();
+	*/
+
 	unsafe {
-		switch_to_user(frame, mepc, satp);
+		println!("TEXT:        0x{:x} -> 0x{:x}", TEXT_START, TEXT_END);
+		println!("RODATA:      0x{:x} -> 0x{:x}", RODATA_START, RODATA_END);
+		println!("DATA:        0x{:x} -> 0x{:x}", DATA_START, DATA_END);
+		println!("BSS:         0x{:x} -> 0x{:x}", BSS_START, BSS_END);
+		println!("APPS BASE:   0x{:x} -> 0x{:x}", BSS_END, KERNEL_STACK_START);
+		println!("STACK:       0x{:x} -> 0x{:x}", KERNEL_STACK_START, KERNEL_STACK_END);
+	}
+
+	//load into APP_BASE_ADDRESS + app_id * APP_SIZE_LIMIT
+	loader::load_apps();
+
+	//时钟切片调度
+	trap::schedule_next_context_switch(1);
+
+	let frame = sched::schedule();
+	unsafe {
+		switch_to_user(frame);
 	}
 
 	// switch_to_user will not return, so we should never get here
-	println!("WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
+	//println!("WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
 
 /////////////////////////////////////////
 
@@ -429,6 +455,12 @@ pub mod cpu;
 pub mod trap;
 pub mod plic;
 pub mod process;
+pub mod user;
 pub mod syscall;
 pub mod sched;
+pub mod fs;
+pub mod console;
+pub mod lock;
+
+pub mod loader;
 

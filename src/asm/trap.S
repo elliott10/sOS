@@ -88,6 +88,8 @@ m_trap_vector:
     csrr a4, mstatus
     csrr a5, mscratch
 
+    sd a0, 520(t5) #保存pc
+
     la t0, KERNEL_STACK_END
     ld sp, 0(t0)
     #ld   sp, 520(a5) //trap stack
@@ -109,11 +111,24 @@ m_trap_vector:
 
 .global switch_to_user
 switch_to_user:
-    # a0 = FrameTrap, a1 = MEPC, a2 = SATP
+    #Old func: a0 = FrameTrap, a1 = MEPC, a2 = SATP
+    #Now: a0 = FrameTrap
     csrw mscratch, a0
+
+# Load program counter
+ld		a1, 520(a0)
+# Load satp
+ld		a2, 512(a0)
+# Load processor mode
+#ld		a3, 552(a0)
+# Pid
+#ld		a4, 544(a0)
 
     # U态MPP(12:11)=00, MPIE = 1 << 7
     li t0, 1 << 7 | 1 << 5
+
+# mode bits a3
+
     csrw mstatus, t0
 
     csrw mepc, a1
@@ -141,8 +156,18 @@ switch_to_user:
 
 .global make_syscall
 make_syscall:
-    ecall
-    ret
+	# We're setting this up to work with libgloss
+	# They want a7 to be the system call number and all parameters
+	# in a0 - a5
+	mv	a7, a0
+	mv	a0, a1
+	mv	a1, a2
+	mv	a2, a3
+	mv	a3, a4
+	mv	a4, a5
+	mv	a5, a6
+	ecall
+	ret
 
 # trap handler
 .global asm_trap_vector

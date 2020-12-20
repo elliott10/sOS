@@ -1,3 +1,5 @@
+use crate::uart;
+
 //通过MMIO地址对平台级中断控制器PLIC的寄存器进行设置
 const PLIC_PRIORITY: usize = 0x0c00_0000;
 const PLIC_PENDING: usize = 0x0c00_1000;
@@ -70,4 +72,24 @@ pub fn set_priority(id: u32, prio: u8) {
 		prio_reg.add(id as usize).write_volatile(actual_prio);
 	}
 }
+
+pub fn handle_interrupt() {
+	if let Some(interrupt) = next() {
+		match interrupt {
+			1..=8 => {
+				//virtio::handle_interrupt(interrupt);
+			},
+			10 => { //UART中断ID是10
+				uart::handle_interrupt();
+			},
+			_ => {
+				println!("Unknown external interrupt: {}", interrupt);
+			},
+		}
+		//这将复位pending的中断，允许UART再次中断。
+		//否则，UART将被“卡住”
+		complete(interrupt);
+	}
+}
+
 

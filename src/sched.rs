@@ -1,41 +1,42 @@
-use crate::{process::{ProcessState, PROCESS_LIST}};
+use crate::process::{ProcessState, PROCESS_LIST, PROCESS_LIST_MUTEX};
+use crate::cpu::get_mtime;
 
-pub fn schedule() -> (usize, usize, usize) {
+pub fn schedule() -> usize {
+	let mut frame_addr: usize = 0x1111;
 	unsafe {
-		if let Some(mut pl) = PROCESS_LIST.take() {
-			//队列向左旋转1个，相当于会每次调度左旋一次
-			pl.rotate_left(1);
-			let mut frame_addr: usize = 0;
-			let mut mepc: usize = 0;
-			let mut satp: usize = 0;
-			let mut pid: usize = 0;
-			if let Some(prc) = pl.front() {
-				match prc.get_state() {
-					ProcessState::Running => {
-						frame_addr = prc.get_frame_address();
-						mepc = prc.get_program_counter();
-						satp = prc.get_table_address() >> 12;
-						pid = prc.get_pid() as usize;
-					},
-					ProcessState::Sleeping => {
-					},
-					_ => {},
-				}
-
-			}
-			println!("Scheduling {}", pid);
-			PROCESS_LIST.replace(pl);
-			if frame_addr != 0 {
-				if satp != 0 {
-					//Sv39 = 8 << 60, asid << 44, satp >> 12
-					return (frame_addr, mepc, (8 << 60) | (pid << 44) | satp);
-				}else{
-					return (frame_addr, mepc, 0);
-				}
-
-			}
+		if PROCESS_LIST_MUTEX.try_lock() == false {
+			return 0;
 		}
+
+		if let Some(mut pl) = PROCESS_LIST.take() {
+			loop {
+				//队列向左旋转1个，相当于会每次调度左旋一次
+				pl.rotate_left(1);
+				if let Some(prc) = pl.front_mut() {
+					match prc.state {
+						ProcessState::Running => {
+							frame_addr = prc.frame as usize;
+							break;
+						},
+						ProcessState::Sleeping => {
+							if prc.sleep_until <= get_mtime() {
+								prc.state = ProcessState::Running;
+								frame_addr = prc.frame as usize;
+								break;
+							}
+						},
+						_ => {},
+					}
+
+				}
+			}
+			PROCESS_LIST.replace(pl);
+		}else{
+			println!("could not take process list");
+		}
+
+	PROCESS_LIST_MUTEX.unlock();
 	}
-	//本来至少应该有init进程
-	(0, 0, 0)
+	//至少应该有init进程
+	frame_addr
 }

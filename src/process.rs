@@ -1,33 +1,82 @@
 use crate::cpu::{TrapFrame, mscratch_write, satp_write, satp_fence_asid, build_satp, SatpMode};
 use crate::page::{alloc, dealloc, map,unmap, zalloc, EntryBits, Table, PAGE_SIZE};
-use alloc::collections::vec_deque::VecDeque;
+use crate::user::init_process;
+use crate::cpu::get_mtime;
+use crate::fs::Inode;
+use crate::lock::Mutex;
+use alloc::collections::{vec_deque::VecDeque, BTreeMap};
+use alloc::string::String;
+use core::ptr::null_mut;
 
 //每个进程的栈分配2个页
 const STACK_PAGES: usize = 2;
 const STACK_ADDR: usize = 0x1_0000_0000;
-const PROCESS_STARTING_ADDR: usize = 0x8000_0000;
+const PROCESS_STARTING_ADDR: usize = 0x2000_0000;
 //进程的开始执行地址, user mode
 
 //进程列表，使用了global allocator
 pub static mut PROCESS_LIST: Option<VecDeque<Process>> = None;
+pub static mut PROCESS_LIST_MUTEX: Mutex = Mutex::new();
 static mut NEXT_PID: u16 = 1;
 
-extern "C" {
-	fn make_syscall(a: usize) -> usize;
-}
-
-fn init_process() {
-	let mut i: usize = 0;
-	//运行在U态
-	loop {
-		i += 1;
-		if i > 70_000_000 {
-			unsafe {
-				make_syscall(1);
+pub fn set_running(pid: u16) -> bool {
+	let mut retval = false;
+	unsafe {
+		if let Some(mut pl) = PROCESS_LIST.take() {
+			for proc in pl.iter_mut() {
+				if proc.pid == pid {
+					proc.state = ProcessState::Running;
+					retval = true;
+					break;
+				}
 			}
-			i = 0;
+			PROCESS_LIST.replace(pl);
 		}
 	}
+	//println!("Set PID:{} running...", pid);
+	retval
+}
+
+pub fn set_waiting(pid: u16) -> bool {
+	let mut retval = false;
+	unsafe {
+		if let Some(mut pl) = PROCESS_LIST.take() {
+			for proc in pl.iter_mut() {
+				if proc.pid == pid {
+					proc.state = ProcessState::Waiting;
+					retval = true;
+					break;
+				}
+			}
+			PROCESS_LIST.replace(pl);
+		}
+	}
+	//println!("Set PID:{} waiting...", pid);
+	retval
+}
+
+/// Sleep a process
+pub fn set_sleeping(pid: u16, duration: usize) -> bool {
+	// Yes, this is O(n). A better idea here would be a static list
+	// of process pointers.
+	let mut retval = false;
+	unsafe {
+		if let Some(mut pl) = PROCESS_LIST.take() {
+			for proc in pl.iter_mut() {
+				if proc.pid == pid {
+					proc.state = ProcessState::Sleeping;
+					proc.sleep_until = get_mtime() + duration;
+					retval = true;
+					break;
+				}
+			}
+			// Now, we no longer need the owned Deque, so we hand it
+			// back by replacing the PROCESS_LIST's None with the
+			// Some(pl).
+			PROCESS_LIST.replace(pl);
+		}
+	}
+	retval
 }
 
 pub fn add_process_default(pr: fn()) {
@@ -49,6 +98,7 @@ pub fn add_process_default(pr: fn()) {
 //现在在kernel，之后会调用shell
 pub fn init() -> usize {
 	unsafe {
+		PROCESS_LIST_MUTEX.spin_lock();
 		//初始化PROCESS_LIST, 队列的容量15
 		PROCESS_LIST = Some(VecDeque::with_capacity(15));
 		add_process_default(init_process);
@@ -69,11 +119,16 @@ pub fn init() -> usize {
 		*/
 
 		PROCESS_LIST.replace(pl);
+		PROCESS_LIST_MUTEX.unlock();
 
 		//返回第一条指令的执行地址, 有MMU
 		//func_vaddr
 		(*p).pc
 	}
+}
+
+pub fn add_kernel_process_args(func: fn(args_ptr: usize), args: usize) -> u16 {
+	0
 }
 
 pub enum ProcessState {
@@ -87,13 +142,15 @@ pub enum ProcessState {
 //C风格,方便汇编访问
 #[repr(C)]
 pub struct Process {
-	frame: *mut TrapFrame,
-	stack: *mut u8,
-	pid:   u16,
-	root:  *mut Table,
-	state: ProcessState,
-	data:  ProcessData,
-	sleep_until: usize,
+	pub frame:       *mut TrapFrame,
+	pub stack:       *mut u8,
+	pub pid:         u16,
+	pub mmu_table:   *mut Table,
+	pub state:       ProcessState,
+	pub data:        ProcessData,
+	pub sleep_until: usize,
+	pub program:	 *mut u8,
+	pub brk:         usize,
 }
 
 impl Process {
@@ -105,10 +162,13 @@ impl Process {
 			Process { frame: zalloc(1) as *mut TrapFrame,
 			          stack: alloc(STACK_PAGES),
 				  pid:   unsafe { NEXT_PID },
-				  root:  zalloc(1) as *mut Table,
+				  mmu_table:  zalloc(1) as *mut Table,
 				  state: ProcessState::Running,
-				  data:  ProcessData::zero(),
-				  sleep_until: 0 };
+				  data:  ProcessData::new(),
+				  sleep_until: 0,
+				  program: null_mut(),
+				  brk: 0,
+			};
 
 		unsafe {
 			satp_fence_asid(NEXT_PID as usize);
@@ -119,52 +179,96 @@ impl Process {
 		let saddr = ret_proc.stack as usize;
 		unsafe {
 			(*ret_proc.frame).pc = func_vaddr;
+			(*ret_proc.frame).pid = ret_proc.pid as usize;
 			//x2 = sp栈指针, 移动到申请到内存的底部
 			(*ret_proc.frame).regs[2] = STACK_ADDR + PAGE_SIZE * STACK_PAGES;
 		}
 
 		let pt;
 		unsafe {
-			pt = &mut *ret_proc.root;
-			(*ret_proc.frame).satp = build_satp(SatpMode::Sv39, ret_proc.pid as usize, ret_proc.root as usize);
+			pt = &mut *ret_proc.mmu_table;
+			(*ret_proc.frame).satp = build_satp(SatpMode::Sv39, ret_proc.pid as usize, ret_proc.mmu_table as usize);
+			println!("Process {}, mmu table: 0x{:x}", ret_proc.pid as usize, ret_proc.mmu_table as usize);
 		}
 
 		//把栈stack映射到用户空间的虚拟内存
 		for i in 0..STACK_PAGES {
 			let addr = i * PAGE_SIZE;
 			map(pt, STACK_ADDR + addr, saddr + addr, EntryBits::UserReadWrite.val(), 0);
-			//println!("Set process stack from 0x{:016x} -> 0x{:016x}", STACK_ADDR + addr, saddr + addr);
+			println!("Map process stack:     0x{:x}", saddr + addr);
 		}
 
+		let mut modifier = 0;
 		//映射PC等
-		for i in 0..=100 {
-			let modifier = i * 0x1000;
+		//for i in 0..=100 {
+		for i in 0..=256 { // app < 1M
+			modifier = i * 0x1000;
 			map(pt, func_vaddr + modifier, func_addr + modifier, EntryBits::UserReadWriteExecute.val(), 0);
 		}
+		println!("Map process func_addr: 0x{:x} ~ 0x{:x}", func_addr, func_addr + modifier);
 
 		//make_syscall函数，现在在kernel里运行一个进程; 到时从块设备载入时，我们可载入指令到内存的任何处
 		map(pt, 0x8000_0000, 0x8000_0000, EntryBits::UserReadExecute.val(), 0);
+
+		/*
+		for i in 0..=20 {
+		modifier = i * 0x1000;
+		map(pt, 0x8000_0000 + modifier, 0x8000_0000 + modifier, EntryBits::UserReadExecute.val(), 0);
+		}
+		println!("Map init process:      0x80000000 ~ 0x{:x}", 0x80000000 + modifier);
+		*/
+
 		ret_proc
 	}
 
-	pub fn get_frame_address(&self) -> usize {
-		self.frame as usize
+}
+
+pub fn delete_process(pid: u16) {
+	unsafe {
+		if let Some(mut pl) = PROCESS_LIST.take() {
+			for i in 0..pl.len() {
+				let p = pl.get_mut(i).unwrap();
+				if (*(*p).frame).pid as u16 == pid {
+					// When the structure gets dropped, all
+					// of the allocations get deallocated.
+					pl.remove(i);
+					break;
+				}
+			}
+			// Now, we no longer need the owned Deque, so we hand it
+			// back by replacing the PROCESS_LIST's None with the
+			// Some(pl).
+			PROCESS_LIST.replace(pl);
+		}
 	}
-	pub fn get_program_counter(&self) -> usize {
-		unsafe { (*self.frame).pc }
+}
+
+pub unsafe fn get_by_pid(pid: u16) -> *mut Process {
+	let mut ret = null_mut();
+	if let Some(mut pl) = PROCESS_LIST.take() {
+		for i in pl.iter_mut() {
+			if (*(i.frame)).pid as u16 == pid {
+				ret = i as *mut Process;
+				break;
+			}
+		}
+		PROCESS_LIST.replace(pl);
 	}
-	pub fn get_table_address(&self) -> usize {
-		self.root as usize
+	if ret.is_null() {
+		//println!("Get process by pid: {} failed!", pid);
 	}
-	pub fn get_state(&self) -> &ProcessState {
-		&self.state
-	}
-	pub fn get_pid (&self) -> u16 {
-		self.pid
-	}
-	pub fn get_sleep_until(&self) -> usize {
-		self.sleep_until
-	}
+	ret
+}
+
+pub enum Descriptor {
+	File(Inode),
+	Device(usize),
+	Framebuffer,
+	ButtonEvents,
+	AbsoluteEvents,
+	Console,
+	Network,
+	Unknown,
 }
 
 //堆上的内存
@@ -172,23 +276,42 @@ impl Drop for Process {
 	fn drop(&mut self) {
 		dealloc(self.stack);
 		unsafe {
-			unmap(&mut *self.root);
+			unmap(&mut *self.mmu_table);
 		}
 		//手动清root根页表
-		dealloc(self.root as *mut u8);
+		dealloc(self.mmu_table as *mut u8);
+
+		println!("Drop a process: {}", self.pid);
+
+		dealloc(self.frame as *mut u8);
+		for i in self.data.pages.drain(..) {
+			dealloc(i as *mut u8);
+		}
+		// Kernel processes don't have a program, instead the program is linked
+		// directly in the kernel.
+		if !self.program.is_null() {
+			dealloc(self.program);
+		}
+
 	}
 }
 
 //进程的私有数据
 pub struct ProcessData {
-	cwd_path: [u8; 128]
+	pub environ: BTreeMap<String, String>,
+	pub fdesc: BTreeMap<u16, Descriptor>,
+	pub cwd: String,
+	pub pages: VecDeque<usize>,
 }
 
 impl ProcessData {
-	pub fn zero() -> Self {
+	pub fn new() -> Self {
 		ProcessData { 
-			cwd_path: [0; 128]
-		}
+			environ: BTreeMap::new(),
+			fdesc: BTreeMap::new(),
+			cwd: String::from("/"),
+			pages: VecDeque::new(),
+		 }
 	}
 }
 
