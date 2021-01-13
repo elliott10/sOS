@@ -4,6 +4,8 @@ version = "0.1.0"
 authors = ["elliott10 <xiaoluoyuan@163.com>"]
 edition = "2018"
 
+# Ref: https://osblog.stephenmarz.com/index.html
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
