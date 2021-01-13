@@ -29,7 +29,7 @@ pub unsafe fn do_syscall(mepc: usize, frame: *mut TrapFrame) {
 			println!("You called the exit system call!");
 		},
 		1 => {
-		//	println!("Test syscall {}", syscall_number);
+            println!("Test syscall {}", syscall_number);
 		},
 		2 => {
 			// Easy putchar

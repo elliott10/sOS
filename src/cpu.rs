@@ -3,7 +3,8 @@ use core::ptr::null_mut;
 // The frequency of QEMU is 10 MHz
 pub const FREQ: u64 = 10_000_000;
 // Let's do this 250 times per second for switching
-pub const CONTEXT_SWITCH_TIME: u64 = FREQ / 500;
+//pub const CONTEXT_SWITCH_TIME: u64 = FREQ / 500;
+pub const CONTEXT_SWITCH_TIME: u64 = FREQ;
 
 #[repr(usize)]
 pub enum SatpMode {
@@ -110,6 +111,7 @@ pub struct TrapFrame {
 	pub qm:     usize, // 536
 	pub pid:    usize, // 544
 	pub mode:   usize, // 552
+    pub trap_stack: *mut u8, //560
 }
 
 impl TrapFrame {
@@ -123,6 +125,7 @@ impl TrapFrame {
 			qm:    1,
 			pid:   0,
 			mode:  0,
+            trap_stack: null_mut(),
 		}
 	}
 }

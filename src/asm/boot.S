@@ -50,8 +50,8 @@ _start:
     la sp, _stack_end
 
     #  置位[12:11]M态的MPP=3, 第7位和3位是使能中断,还需操作mie寄存器
-    #li t0, (0b11<<11) | (1<<7) | (1<<3)
-    li t0, (0b11<<11)
+    li t0, (0b11<<11) | (1<<7) | (1<<3)
+    # li t0, (0b11<<11)
     csrw mstatus, t0
 
     #"machine exception program counter" mepc，ret后会执行到mepc
@@ -60,15 +60,23 @@ _start:
     csrw mepc, t1
 
     #触发中断或异常后调用到mtvec
-    //la t2, asm_trap_vector
-    //csrw mtvec, t2
+    la t2, m_trap_vector
+    csrw mtvec, t2
 
-    #li t3, (1<<3)|(1<<7)|(1<<11)
-    #csrw mie, t3
+    li t3, (1<<3)|(1<<7)|(1<<11)
+    csrw mie, t3
 
     #关中断，kinit()初始化
-    csrw mie, zero
-    
+    #csrw mie, zero
+
+#测试获取这些id寄存器
+csrr a0, misa
+csrr a1, mvendorid
+csrr a2, marchid
+csrr a3, mimpid
+csrr a4, mhartid
+csrr a5, mstatus
+
     #设置返回地址，到时候进入supervisor mode
     la ra, 2f
     mret #跳转到mepc，后进入Rust

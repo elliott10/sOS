@@ -38,7 +38,7 @@ pub fn init(&mut self) {
 		// 设置波特率，除子，取整等
 		// 2.729 MHz (22,729,000 cycles per second) --> 波特率 2400 (BAUD)
 
-		// 根据NS16500A规格说明书计算出divisor
+		// 根据NS16550a规格说明书计算出divisor
 		// divisor = ceil( (clock_hz) / (baud_sps x 16) )
 		// divisor = ceil( 22_729_000 / (2400 x 16) ) = ceil( 591.901 ) = 592
 

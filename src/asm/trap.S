@@ -90,9 +90,13 @@ m_trap_vector:
 
     sd a0, 520(t5) #保存pc
 
-    la t0, KERNEL_STACK_END
-    ld sp, 0(t0)
-    #ld   sp, 520(a5) //trap stack
+    //la t0, KERNEL_STACK_END //原本的内核栈岂止不是被弄坏啦???
+    //ld sp, 0(t0)
+
+//怎么在内联汇编里使用全局变量? KERNEL_TRAP_FRAME[0].trap_stack
+//载入 trap stack; 每次栈指针被重置，所以注意如果有了嵌套中断(默认RISCV不支持嵌套中断)，会搞乱这个stack
+    ld   sp, 560(t5) 
+
     call m_trap
 
     #函数返回值到a0
@@ -107,13 +111,24 @@ m_trap_vector:
 	.set i, i+1
     .endr
 
+// mret将pc设置为mepc，通过将mstatus的MPIE域复制到MIE来恢复之前的中断使能设置，
+// 并将权限模式设置为mstatus的MPP域中的值，即恢复之前的权限。
     mret
+
+
+
+//
+// 当发生Trap时，CPU硬件自动把控制状态寄存器mstatus中的MIE位置零以禁用中断，并把先前的MIE值保留到 MPIE 中；
+// 把发生异常之前的权限模式保留在mstatus的MPP域中，再把权限模式更改为M态；
+// 注意：默认的，任何权限模式下发生的异常，控制权都会被移交到M模式的异常处理程序；
+// MPP域的编码可以为：11(M态), 01(S态), 00(U态)
+//
 
 .global switch_to_user
 switch_to_user:
     #Old func: a0 = FrameTrap, a1 = MEPC, a2 = SATP
     #Now: a0 = FrameTrap
-    csrw mscratch, a0
+    csrw mscratch, a0 //直接就修改了mscratch而没保存可能会出问题呀!!!
 
 # Load program counter
 ld		a1, 520(a0)
@@ -167,6 +182,11 @@ make_syscall:
 	mv	a4, a5
 	mv	a5, a6
 	ecall
+	ret
+
+.global do_asm
+do_asm:
+	csrr a0, mstatus
 	ret
 
 # trap handler

@@ -32,22 +32,22 @@ pub fn sys_exit(state: i32) -> isize {
 
 pub fn init_process() {
 	let mut i: usize = 0;
-	sys_write(STDOUT, "init from U mode\n".as_bytes());
+	sys_write(STDOUT, "\ninit from U mode\n".as_bytes());
 
 	//运行在U态
-	loop {
-		i += 1;
-		if i > 70_000_000 {
-			unsafe {
-				syscall(1, 0, 0, 0);
-			}
+    loop {
+        i += 1;
+        if i > 70_000_000 {
+            unsafe {
+                syscall(1, 0, 0, 0);
+            }
+            i = 0;
 
-			i = 0;
+            unsafe {
+                llvm_asm!("ebreak"::::"volatile");
+            }
 
-			/*
-			sys_write(STDOUT, "init yield!\n".as_bytes());
-			sys_yield();
-			*/
-		}
+            sys_exit(0);//目前必须调用SYSCALL_EXIT来结束一个进程，不然出错
+        }
 	}
 }

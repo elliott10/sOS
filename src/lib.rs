@@ -9,7 +9,10 @@
 #[macro_use]
 extern crate alloc;
 
+use crate::cpu::mstatus_read;
 use alloc::prelude::v1::*;
+
+use crate::user::syscall;
 
 #[macro_export]
 macro_rules! print
@@ -121,15 +124,42 @@ fn rust_switch_to_user(frame: usize) -> ! {
 	}
 }
 
+extern "C" {
+    fn do_asm() -> usize;
+}
+
+#[no_mangle]
+extern "C" fn _kinit(misa: usize, mvendorid: usize, marchid: usize, mimpid: usize, mhartid: usize, mstatus: usize) {
+    uart::Uart::new(0x1000_0000).init();
+    println!("------------------------------");
+    println!("misa:{:#x}, mvendorid:{:#x}, marchid:{:#x}, mimpid:{:#x}, mhartid:{:#x}, mstatus:{:#x}",misa,mvendorid,marchid,mimpid,mhartid,mstatus);
+
+    use core::fmt::Write;
+    write!(crate::uart::Uart::new(0x1000_0000), "Test Write!\n");
+
+    let mut _in: usize = 0;
+    let mut _out: usize = 0;
+    unsafe {
+        llvm_asm!("csrr $0, time" : "=r"(_out));
+    }
+
+    println!("now time:{:#x}", _out);
+
+    panic!("XLY");
+}
+
 //Entry Point
+//注意这之前关闭了中断
 #[no_mangle]
 //extern "C" fn kinit() -> usize {
 extern "C" fn kinit() {
 	uart::Uart::new(0x1000_0000).init();
-        //SV39 MMU 分页系统
+
+    //SV39 MMU 分页系统
 	page::init();
 	kmem::init();
 
+    // 注意可能需要进行PLIC地址的页表映射
 	// VIRTIO = [1..8]
 	// UART0 = 10
 	// PCIE = [32..35]
@@ -139,9 +169,6 @@ extern "C" fn kinit() {
 	plic::set_priority(10, 1);
 
 	console::init();
-
-	let ret = process::init();
-	println!("Init process created at address 0x{:08x}", ret);
 
 	/*
 	unsafe {
@@ -162,20 +189,44 @@ extern "C" fn kinit() {
 		println!("STACK:       0x{:x} -> 0x{:x}", KERNEL_STACK_START, KERNEL_STACK_END);
 	}
 
+    //进入Trap后才能通过mscratch保存TrapFrame
+    unsafe {
+        cpu::mscratch_write((&mut cpu::KERNEL_TRAP_FRAME[0] as *mut cpu::TrapFrame) as usize);
+        cpu::sscratch_write(cpu::mscratch_read());
+		cpu::KERNEL_TRAP_FRAME[0].trap_stack = page::zalloc(1).add(page::PAGE_SIZE);
+        println!("kernel trap frame:{:#x}, trap stack:{:#x}", cpu::mscratch_read() as usize, cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize);
+    }
+
+    let mstatus = mstatus_read(); //为什么读不准mstatus的值?
+    println!("mstatus: {:#x}", mstatus);
+
+    //return;
+
+/////////////////////////////////////////
+
+	let ret = process::init();
+	println!("Init process created at address 0x{:08x}", ret);
+
 	//load into APP_BASE_ADDRESS + app_id * APP_SIZE_LIMIT
-	loader::load_apps();
+    //
+    loader::load_apps();
 
 	//时钟切片调度
-	trap::schedule_next_context_switch(1);
+	//trap::schedule_next_context_switch(1);
 
+    /*
 	let frame = sched::schedule();
 	unsafe {
 		switch_to_user(frame);
 	}
+    */
+
+    syscall(1, 0, 0, 0); //通过ecall来保存KERNEL_TRAP_FRAME, 最终进入switch_to_user()
 
 	// switch_to_user will not return, so we should never get here
-	//println!("WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
+	println!("Jump from U mode! | WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
 
+    return; 
 /////////////////////////////////////////
 
 	let root_ptr = kmem::get_page_table();
@@ -186,16 +237,7 @@ extern "C" fn kinit() {
 	let kheap_head = kmem::get_head() as usize;
 	let total_pages = kmem::get_num_allocations();
 	println!();
-	println!();
-
-	unsafe {
-		println!("TEXT:        0x{:x} -> 0x{:x}", TEXT_START, TEXT_END);
-		println!("RODATA:      0x{:x} -> 0x{:x}", RODATA_START, RODATA_END);
-		println!("DATA:        0x{:x} -> 0x{:x}", DATA_START, DATA_END);
-		println!("BSS:         0x{:x} -> 0x{:x}", BSS_START, BSS_END);
-		println!("STACK:       0x{:x} -> 0x{:x}", KERNEL_STACK_START, KERNEL_STACK_END);
-		println!("Kernel HEAP: 0x{:x} -> 0x{:x}", kheap_head, kheap_head + total_pages * 4096);
-	}
+	println!("Kernel HEAP: 0x{:x} -> 0x{:x}", kheap_head, kheap_head + total_pages * 4096);
 
 	//指定内存范围进行恒等映射，虚拟地址 = 物理地址
 	//kernel堆内存, 可读可写
@@ -392,12 +434,16 @@ fn kmain() {
 		println!("String = {}", sparkle_heart);
 		kmem::print_table();
 	}
-	println!("\n\nEverything should now be free:");
+	println!("\nEverything should now be free now");
 	//到这后，Box, vec和String的内存应该被释放了，因为出了括号的范围
-	kmem::print_table();
+	//kmem::print_table();
 
-	/*
+    unsafe {
+        llvm_asm!("ebreak"::::"volatile");
+    }
+
 	println!("I'm so awesome. If you start typing something, I'll show you what you typed!");
+	/*
 	loop {
 		if let Some(c) = my_uart.get() {
 			match c {

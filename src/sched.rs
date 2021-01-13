@@ -9,6 +9,10 @@ pub fn schedule() -> usize {
 		}
 
 		if let Some(mut pl) = PROCESS_LIST.take() {
+            if pl.is_empty() {
+			    //println!("PROCESS_LIST is empty !");
+            }else{
+
 			loop {
 				//队列向左旋转1个，相当于会每次调度左旋一次
 				pl.rotate_left(1);
@@ -30,6 +34,9 @@ pub fn schedule() -> usize {
 
 				}
 			}
+
+            }//if
+
 			PROCESS_LIST.replace(pl);
 		}else{
 			println!("could not take process list");

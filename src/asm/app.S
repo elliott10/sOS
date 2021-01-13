@@ -12,7 +12,7 @@ _num_app:
     .global app_0_start
     .global app_0_end
 app_0_start:
-    .incbin "/home/os/rust/tutorial_new/ch6/user/target/riscv64gc-unknown-none-elf/release/hello_world.bin"
+    .incbin "/home/xly/rust/tmp/hello_world.bin"
 app_0_end:
 # opensbi也是用.incbin包含FW_PAYLOAD
         
@@ -21,7 +21,7 @@ app_0_end:
     .global app_1_start
     .global app_1_end
 app_1_start:
-    .incbin "/home/os/rust/tutorial_new/ch6/user/target/riscv64gc-unknown-none-elf/release/fantastic_text.bin"
+    .incbin "/home/xly/rust/tmp/fantastic_text.bin"
 app_1_end:
         
 
@@ -29,6 +29,6 @@ app_1_end:
     .global app_2_start
     .global app_2_end
 app_2_start:
-    .incbin "/home/os/rust/tutorial_new/ch6/user/target/riscv64gc-unknown-none-elf/release/user_shell.bin"
+    .incbin "/home/xly/rust/tmp/user_shell.bin"
 app_2_end:
         

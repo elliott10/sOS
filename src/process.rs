@@ -1,7 +1,6 @@
-use crate::cpu::{TrapFrame, mscratch_write, satp_write, satp_fence_asid, build_satp, SatpMode};
+use crate::cpu::{get_mtime, TrapFrame, mscratch_write, satp_write, satp_fence_asid, build_satp, SatpMode, KERNEL_TRAP_FRAME};
 use crate::page::{alloc, dealloc, map,unmap, zalloc, EntryBits, Table, PAGE_SIZE};
 use crate::user::init_process;
-use crate::cpu::get_mtime;
 use crate::fs::Inode;
 use crate::lock::Mutex;
 use alloc::collections::{vec_deque::VecDeque, BTreeMap};
@@ -160,7 +159,7 @@ impl Process {
 		let func_vaddr = func_addr;
 		let mut ret_proc = 
 			Process { frame: zalloc(1) as *mut TrapFrame,
-			          stack: alloc(STACK_PAGES),
+			          stack: zalloc(STACK_PAGES),
 				  pid:   unsafe { NEXT_PID },
 				  mmu_table:  zalloc(1) as *mut Table,
 				  state: ProcessState::Running,
@@ -179,16 +178,20 @@ impl Process {
 		let saddr = ret_proc.stack as usize;
 		unsafe {
 			(*ret_proc.frame).pc = func_vaddr;
+			(*ret_proc.frame).trap_stack = KERNEL_TRAP_FRAME[0].trap_stack; //未来可取消？
+
 			(*ret_proc.frame).pid = ret_proc.pid as usize;
 			//x2 = sp栈指针, 移动到申请到内存的底部
 			(*ret_proc.frame).regs[2] = STACK_ADDR + PAGE_SIZE * STACK_PAGES;
+
+            //x1 = ra 返回地址寄存器设置？
 		}
 
 		let pt;
 		unsafe {
 			pt = &mut *ret_proc.mmu_table;
 			(*ret_proc.frame).satp = build_satp(SatpMode::Sv39, ret_proc.pid as usize, ret_proc.mmu_table as usize);
-			println!("Process {}, mmu table: 0x{:x}", ret_proc.pid as usize, ret_proc.mmu_table as usize);
+			println!("Process {}, frame: {:#x}, mmu table: {:#x}", ret_proc.pid as usize, ret_proc.frame as usize, ret_proc.mmu_table as usize);
 		}
 
 		//把栈stack映射到用户空间的虚拟内存
@@ -208,15 +211,14 @@ impl Process {
 		println!("Map process func_addr: 0x{:x} ~ 0x{:x}", func_addr, func_addr + modifier);
 
 		//make_syscall函数，现在在kernel里运行一个进程; 到时从块设备载入时，我们可载入指令到内存的任何处
-		map(pt, 0x8000_0000, 0x8000_0000, EntryBits::UserReadExecute.val(), 0);
-
-		/*
+		//map(pt, 0x8000_0000, 0x8000_0000, EntryBits::UserReadExecute.val(), 0);
+        //
+        // 可能需要多映射几个页，保证PID:1 能够正常跑起来：
 		for i in 0..=20 {
 		modifier = i * 0x1000;
 		map(pt, 0x8000_0000 + modifier, 0x8000_0000 + modifier, EntryBits::UserReadExecute.val(), 0);
 		}
 		println!("Map init process:      0x80000000 ~ 0x{:x}", 0x80000000 + modifier);
-		*/
 
 		ret_proc
 	}
